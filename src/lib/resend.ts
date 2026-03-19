@@ -1,8 +1,18 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resendApiKey = process.env.RESEND_API_KEY || "";
+
+if (!resendApiKey) {
+  console.warn("RESEND_API_KEY is missing. Email client not initialized.");
+}
+
+export const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
 export async function sendSummaryEmail(title: string, htmlContent: string) {
+  if (!resend) {
+    console.error("Resend client not initialized. Skipping email.");
+    return;
+  }
   const from = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev";
   const to = process.env.RESEND_TO_EMAIL || "dw8739926@gmail.com";
 

@@ -2,14 +2,22 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 
 const apiKey = process.env.GOOGLE_GENAI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(apiKey);
-const fileManager = new GoogleAIFileManager(apiKey);
 
-export const model = genAI.getGenerativeModel({
+if (!apiKey) {
+  console.warn("GOOGLE_GENAI_API_KEY is missing. Gemini client not initialized.");
+}
+
+export const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
+export const fileManager = apiKey ? new GoogleAIFileManager(apiKey) : null;
+
+export const model = genAI ? genAI.getGenerativeModel({
   model: "gemini-3.1-flash-lite-preview",
-});
+}) : null as any;
 
 export async function uploadVideo(filePath: string, displayName: string) {
+  if (!fileManager) {
+    throw new Error("Gemini File Manager not initialized. Check API key.");
+  }
   const uploadResponse = await fileManager.uploadFile(filePath, {
     mimeType: "video/mp4",
     displayName: displayName,
@@ -36,5 +44,6 @@ export async function uploadVideo(filePath: string, displayName: string) {
 }
 
 export async function deleteFile(fileName: string) {
+  if (!fileManager) return;
   await fileManager.deleteFile(fileName);
 }
