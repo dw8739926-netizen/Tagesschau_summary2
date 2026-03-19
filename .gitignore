@@ -38,7 +38,8 @@ yarn-error.log*
 
 # custom
 /temp/
-/bin/
+/bin/git/
+/bin/PortableGit.exe
 test_video.mp4
 tmp_rss.xml
 check_db.ts

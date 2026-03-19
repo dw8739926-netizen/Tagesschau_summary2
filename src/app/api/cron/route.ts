@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLatestVideosFromPlaylist } from "@/lib/youtube";
-import { isVideoProcessed, saveSummary } from "@/lib/supabase";
+import { isVideoProcessed, saveSummary, supabase } from "@/lib/supabase";
 import { uploadVideo, model, deleteFile } from "@/lib/gemini";
 import { sendSummaryEmail } from "@/lib/resend";
-import { spawnSync } from "child_process";
+import { spawnSync, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -11,6 +11,10 @@ import os from "os";
 export const maxDuration = 60; // As requested
 
 export async function GET(req: NextRequest) {
+  if (!supabase) {
+    return NextResponse.json({ error: "Supabase client not initialized. Check environment variables." }, { status: 500 });
+  }
+
   // In production, add a CRON_SECRET check here for security
   
   try {
@@ -31,14 +35,32 @@ export async function GET(req: NextRequest) {
 
     console.log(`Processing new video: ${latestVideo.title} (${latestVideo.id})`);
 
-    // 1. Download Video to local temp folder using yt-dlp.exe
+    // 1. Download Video to local temp folder using yt-dlp
     const videoUrl = `https://www.youtube.com/watch?v=${latestVideo.id}`;
-    const tempDir = path.join(process.cwd(), "temp");
+    const tempDir = path.join(os.tmpdir(), "tagesschau-temp"); // Use system temp for Vercel
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
     const tempFilePath = path.join(tempDir, `${latestVideo.id}.mp4`);
-    const ytDlpPath = path.join(process.cwd(), "bin", "yt-dlp.exe");
+    
+    const isWindows = process.platform === "win32";
+    const ytDlpBinary = isWindows ? "yt-dlp.exe" : "yt-dlp";
+    const ytDlpPath = path.join(process.cwd(), "bin", ytDlpBinary);
+    
+    console.log(`OS: ${process.platform}, yt-dlp Path: ${ytDlpPath}`);
+    
+    if (!fs.existsSync(ytDlpPath)) {
+      throw new Error(`yt-dlp binary not found at ${ytDlpPath}`);
+    }
+
+    // Ensure execution permissions on Linux/macOS
+    if (!isWindows) {
+      try {
+        execSync(`chmod +x "${ytDlpPath}"`);
+      } catch (e) {
+        console.warn("Could not set executable bit, might already be set or fail on Vercel.");
+      }
+    }
     
     console.log(`Working Directory: ${process.cwd()}`);
     console.log(`yt-dlp Path: ${ytDlpPath}`);

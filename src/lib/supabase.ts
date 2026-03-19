@@ -3,7 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn("Supabase environment variables are missing. Client not initialized.");
+}
+
+export const supabase = (supabaseUrl && supabaseAnonKey) 
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null;
 
 export interface TagesschauSummary {
   video_id: string; // YouTube Video ID
@@ -14,6 +20,7 @@ export interface TagesschauSummary {
 }
 
 export async function isVideoProcessed(videoId: string): Promise<boolean> {
+  if (!supabase) return false;
   const { data, error } = await supabase
     .from("tagesschau_summaries_v2")
     .select("video_id")
@@ -28,6 +35,7 @@ export async function isVideoProcessed(videoId: string): Promise<boolean> {
 }
 
 export async function saveSummary(summary: TagesschauSummary) {
+  if (!supabase) return;
   const { error } = await supabase
     .from("tagesschau_summaries_v2")
     .upsert({
@@ -44,6 +52,7 @@ export async function saveSummary(summary: TagesschauSummary) {
 }
 
 export async function getSummaries(): Promise<TagesschauSummary[]> {
+  if (!supabase) return [];
   const { data, error } = await supabase
     .from("tagesschau_summaries_v2")
     .select("*")
