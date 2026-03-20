@@ -60,61 +60,65 @@ export async function GET(req: NextRequest) {
         ytDlpPath = tempBinaryPath;
       }
 
-      // 2. Download Video
-      console.log(`Downloading ${v.id} (Direct MP4: ${!!v.videoUrl})...`);
+      // 1. Try to get Transcript (FAST PATH)
+      console.log(`Checking for transcript for ${v.id}...`);
+      const transcriptPath = path.join(tempDir, `${v.id}.de.srt`);
       
-      if (v.videoUrl) {
-        try {
-          const res = await fetch(v.videoUrl);
-          if (!res.ok) throw new Error(`Fetch failed: ${res.statusText}`);
-          const buffer = await res.arrayBuffer();
-          fs.writeFileSync(tempFilePath, Buffer.from(buffer));
-          console.log(`Direct download completed: ${tempFilePath}`);
-        } catch (err: any) {
-          console.warn("Direct download failed, falling back to yt-dlp:", err.message);
-        }
-      }
+      // Use yt-dlp to download ONLY the subtitles
+      spawnSync(ytDlpPath, [
+        "--skip-download",
+        "--write-auto-subs",
+        "--sub-lang", "de",
+        "--convert-subs", "srt",
+        "-o", path.join(tempDir, v.id),
+        videoUrl
+      ], { encoding: "utf-8" });
 
-      // Fallback or secondary attempt via yt-dlp
-      if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
+      let summaryText = "";
+
+      if (fs.existsSync(transcriptPath)) {
+        console.log(`Transcript found! Processing text...`);
+        const rawTranscript = fs.readFileSync(transcriptPath, "utf-8");
+        // Simple SRT cleaning (removing timestamps and numbers)
+        const cleanTranscript = rawTranscript
+          .replace(/\d+\r?\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g, "")
+          .replace(/<[^>]+>/g, "")
+          .trim();
+        
+        const { summarizeTranscript } = await import("@/lib/gemini");
+        summaryText = await summarizeTranscript(cleanTranscript);
+      } else {
+        console.log(`No transcript found. Falling back to video download (Warning: May timeout on Vercel Hobby)...`);
+        
+        // Final fallback: Video Download
         const downloadResult = spawnSync(ytDlpPath, [
-          "-f", "best[height<=720][ext=mp4]/best",
+          "-f", "best[height<=480][ext=mp4]/best", // Lower quality for faster download
           "--merge-output-format", "mp4",
           "--extractor-args", "youtube:player_client=android,web",
           "-o", tempFilePath,
           videoUrl
         ], { encoding: "utf-8" });
 
-        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
-          const errorDetail = downloadResult.stderr || downloadResult.error?.message || "Unknown error";
-          console.error(`Download failed for ${v.id}:`, errorDetail);
-          results.push({ 
-            id: v.id, 
-            status: "failed", 
-            error: "Download failed", 
-            detail: errorDetail,
-            exitCode: downloadResult.status 
-          });
-          continue;
+        if (fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0) {
+          const { uploadVideo, model, deleteFile } = await import("@/lib/gemini");
+          const geminiFile = await uploadVideo(tempFilePath, v.title);
+          
+          const prompt = `Fasse die Hauptthemen dieser Tagesschau-Sendung präzise auf Deutsch zusammen. 
+          Erhöhe die Detailtiefe. Nenne die wichtigsten 3-4 Meldungen als Bullet-Points.`;
+
+          const analysisResult = await model.generateContent([
+            { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } },
+            { text: prompt },
+          ]);
+          summaryText = analysisResult.response.text();
+          await deleteFile(geminiFile.name);
         }
       }
 
-      // 3. Upload to Gemini
-      console.log(`Uploading ${v.id} to Gemini...`);
-      const geminiFile = await uploadVideo(tempFilePath, v.title);
-      
-      // 4. Generate Summary
-      console.log(`Analyzing ${v.id}...`);
-      const prompt = `Fasse die Hauptthemen dieser Tagesschau-Sendung präzise auf Deutsch zusammen. 
-      Erhöhe die Detailtiefe. Nenne die wichtigsten 3-4 Meldungen als Bullet-Points. 
-      Füge am Ende eine kurze visuelle Beschreibung der markantesten Szene hinzu.`;
-
-      const analysisResult = await model.generateContent([
-        { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } },
-        { text: prompt },
-      ]);
-
-      const summaryText = analysisResult.response.text();
+      if (!summaryText) {
+        results.push({ id: v.id, status: "failed", error: "Could not generate summary (no transcript or video download failed)" });
+        continue;
+      }
 
       // 5. Save & Notify
       const summaryData = {
@@ -125,7 +129,6 @@ export async function GET(req: NextRequest) {
       };
       
       await saveSummary(summaryData);
-
       const htmlEmail = `
         <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px;">
           <h2 style="color: #003366;">Tagesschau Zusammenfassung</h2>
@@ -136,12 +139,11 @@ export async function GET(req: NextRequest) {
           <p style="font-size: 11px; color: #999;">Automatischer Service - Tagesschau Summary App</p>
         </div>
       `;
-      
       await sendSummaryEmail(v.title, htmlEmail);
       
-      // 6. Cleanup
-      await deleteFile(geminiFile.name);
+      // Cleanup
       if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      if (fs.existsSync(transcriptPath)) fs.unlinkSync(transcriptPath);
       
       results.push({ id: v.id, status: "success", title: v.title });
       newProcessedCount++;
