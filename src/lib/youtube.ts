@@ -2,27 +2,37 @@ export interface YouTubeVideo {
   id: string;
   title: string;
   published: string;
+  description: string;
 }
 
 export async function getLatestVideosFromPlaylist(): Promise<YouTubeVideo[]> {
   const playlistId = "PL4A2F331EE86DCC22";
-  const rssUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`;
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  
+  if (!apiKey) {
+    console.error("YOUTUBE_API_KEY is missing.");
+    return [];
+  }
+
+  const apiUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=5&playlistId=${playlistId}&key=${apiKey}`;
 
   try {
-    const response = await fetch(rssUrl);
-    const text = await response.text();
+    const response = await fetch(apiUrl);
+    const data = await response.json();
 
-    const entries = text.split("<entry>").slice(1);
-    
-    return entries.map((entry) => {
-      const id = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)?.[1] || "";
-      const title = entry.match(/<title>([^<]+)<\/title>/)?.[1] || "";
-      const published = entry.match(/<published>([^<]+)<\/published>/)?.[1] || "";
-      
-      return { id, title, published };
-    }).filter(v => v.id);
+    if (!data.items) {
+      console.error("YouTube API Error:", data);
+      return [];
+    }
+
+    return data.items.map((item: any) => ({
+      id: item.snippet.resourceId.videoId,
+      title: item.snippet.title,
+      published: item.snippet.publishedAt,
+      description: item.snippet.description || ""
+    }));
   } catch (error) {
-    console.error("Error fetching YouTube RSS:", error);
+    console.error("Error fetching YouTube API:", error);
     return [];
   }
 }

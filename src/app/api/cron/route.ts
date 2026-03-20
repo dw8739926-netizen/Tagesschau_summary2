@@ -40,87 +40,33 @@ export async function GET(req: NextRequest) {
 
       console.log(`Processing new video: ${v.title} (${v.id})`);
 
-      // 1. Setup paths
-      const videoUrl = `https://www.youtube.com/watch?v=${v.id}`;
-      const tempDir = path.join(os.tmpdir(), "tagesschau-temp");
-      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-      const tempFilePath = path.join(tempDir, `${v.id}.mp4`);
-      
-      const isWindows = process.platform === "win32";
-      const ytDlpBinary = isWindows ? "yt-dlp.exe" : "yt-dlp";
-      const ytDlpSourcePath = path.join(process.cwd(), "bin", ytDlpBinary);
-      let ytDlpPath = ytDlpSourcePath;
-
-      // Ensure Linux binary is executable on Vercel
-      if (!isWindows) {
-        const tempBinaryPath = path.join(os.tmpdir(), "yt-dlp");
-        // FIX: Always copy to overwrite any old cached versions
-        fs.copyFileSync(ytDlpSourcePath, tempBinaryPath);
-        fs.chmodSync(tempBinaryPath, 0o755);
-        ytDlpPath = tempBinaryPath;
-      }
-
-      // 1. Try to get Transcript (FAST PATH)
-      console.log(`Checking for transcript for ${v.id}...`);
-      const transcriptPath = path.join(tempDir, `${v.id}.de.srt`);
-      
-      // Use yt-dlp to download ONLY the subtitles
-      spawnSync(ytDlpPath, [
-        "--skip-download",
-        "--write-auto-subs",
-        "--sub-lang", "de",
-        "--convert-subs", "srt",
-        "-o", path.join(tempDir, v.id),
-        videoUrl
-      ], { encoding: "utf-8" });
+      // 1. HIGH-SPEED TEXT PROCESSING (Vercel-Safe < 5s)
+      console.log(`Processing text-based summary for ${v.id}...`);
 
       let summaryText = "";
-
-      if (fs.existsSync(transcriptPath)) {
-        console.log(`Transcript found! Processing text...`);
-        const rawTranscript = fs.readFileSync(transcriptPath, "utf-8");
-        // Simple SRT cleaning (removing timestamps and numbers)
-        const cleanTranscript = rawTranscript
-          .replace(/\d+\r?\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}/g, "")
-          .replace(/<[^>]+>/g, "")
-          .trim();
-        
+      try {
         const { summarizeTranscript } = await import("@/lib/gemini");
-        summaryText = await summarizeTranscript(cleanTranscript);
-      } else {
-        console.log(`No transcript found. Falling back to video download (Warning: May timeout on Vercel Hobby)...`);
         
-        // Final fallback: Video Download
-        const downloadResult = spawnSync(ytDlpPath, [
-          "-f", "best[height<=480][ext=mp4]/best", // Lower quality for faster download
-          "--merge-output-format", "mp4",
-          "--extractor-args", "youtube:player_client=android,web",
-          "-o", tempFilePath,
-          videoUrl
-        ], { encoding: "utf-8" });
-
-        if (fs.existsSync(tempFilePath) && fs.statSync(tempFilePath).size > 0) {
-          const { uploadVideo, model, deleteFile } = await import("@/lib/gemini");
-          const geminiFile = await uploadVideo(tempFilePath, v.title);
-          
-          const prompt = `Fasse die Hauptthemen dieser Tagesschau-Sendung präzise auf Deutsch zusammen. 
-          Erhöhe die Detailtiefe. Nenne die wichtigsten 3-4 Meldungen als Bullet-Points.`;
-
-          const analysisResult = await model.generateContent([
-            { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } },
-            { text: prompt },
-          ]);
-          summaryText = analysisResult.response.text();
-          await deleteFile(geminiFile.name);
-        }
-      }
-
-      if (!summaryText) {
-        results.push({ id: v.id, status: "failed", error: "Could not generate summary (no transcript or video download failed)" });
+        // Use the combined Title and Description for the summary
+        const contentToAnalyze = `
+          Titel: ${v.title}
+          Beschreibung: ${v.description}
+        `;
+        
+        summaryText = await summarizeTranscript(contentToAnalyze);
+        console.log(`Summary generated from metadata!`);
+      } catch (err: any) {
+        console.error(`Gemini Text Analysis failed for ${v.id}:`, err.message);
+        results.push({ id: v.id, status: "failed", error: "Text analysis failed" });
         continue;
       }
 
-      // 5. Save & Notify
+      if (!summaryText) {
+        results.push({ id: v.id, status: "failed", error: "Could not generate summary from metadata." });
+        continue;
+      }
+
+      // Save & Notify
       const summaryData = {
         video_id: v.id,
         title: v.title,
@@ -140,10 +86,6 @@ export async function GET(req: NextRequest) {
         </div>
       `;
       await sendSummaryEmail(v.title, htmlEmail);
-      
-      // Cleanup
-      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-      if (fs.existsSync(transcriptPath)) fs.unlinkSync(transcriptPath);
       
       results.push({ id: v.id, status: "success", title: v.title });
       newProcessedCount++;
