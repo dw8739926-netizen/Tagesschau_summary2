@@ -45,21 +45,27 @@ export async function GET(req: NextRequest) {
     
     const isWindows = process.platform === "win32";
     const ytDlpBinary = isWindows ? "yt-dlp.exe" : "yt-dlp";
-    const ytDlpPath = path.join(process.cwd(), "bin", ytDlpBinary);
+    const ytDlpSourcePath = path.join(process.cwd(), "bin", ytDlpBinary);
     
-    console.log(`OS: ${process.platform}, yt-dlp Path: ${ytDlpPath}`);
+    // On Vercel (Linux), we must copy the binary to /tmp and chmod it
+    let ytDlpPath = ytDlpSourcePath;
+    if (!isWindows) {
+      const tempBinaryPath = path.join(os.tmpdir(), "yt-dlp");
+      try {
+        if (!fs.existsSync(tempBinaryPath)) {
+          fs.copyFileSync(ytDlpSourcePath, tempBinaryPath);
+          fs.chmodSync(tempBinaryPath, 0o755);
+        }
+        ytDlpPath = tempBinaryPath;
+      } catch (e) {
+        console.warn("Failed to copy/chmod yt-dlp to /tmp, using source path:", e);
+      }
+    }
+    
+    console.log(`OS: ${process.platform}, final yt-dlp Path: ${ytDlpPath}`);
     
     if (!fs.existsSync(ytDlpPath)) {
       throw new Error(`yt-dlp binary not found at ${ytDlpPath}`);
-    }
-
-    // Ensure execution permissions on Linux/macOS
-    if (!isWindows) {
-      try {
-        execSync(`chmod +x "${ytDlpPath}"`);
-      } catch (e) {
-        console.warn("Could not set executable bit, might already be set or fail on Vercel.");
-      }
     }
     
     console.log(`Working Directory: ${process.cwd()}`);
