@@ -54,10 +54,9 @@ export async function GET(req: NextRequest) {
       // Ensure Linux binary is executable on Vercel
       if (!isWindows) {
         const tempBinaryPath = path.join(os.tmpdir(), "yt-dlp");
-        if (!fs.existsSync(tempBinaryPath)) {
-          fs.copyFileSync(ytDlpSourcePath, tempBinaryPath);
-          fs.chmodSync(tempBinaryPath, 0o755);
-        }
+        // FIX: Always copy to overwrite any old cached versions
+        fs.copyFileSync(ytDlpSourcePath, tempBinaryPath);
+        fs.chmodSync(tempBinaryPath, 0o755);
         ytDlpPath = tempBinaryPath;
       }
 
