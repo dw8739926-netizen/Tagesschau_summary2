@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
       const downloadResult = spawnSync(ytDlpPath, [
         "-f", "best[height<=720][ext=mp4]/best",
         "--merge-output-format", "mp4",
+        "--extractor-args", "youtube:player_client=android,web",
         "-o", tempFilePath,
         videoUrl
       ], { encoding: "utf-8" });
