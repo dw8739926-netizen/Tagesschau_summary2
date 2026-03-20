@@ -2,29 +2,28 @@ export interface YouTubeVideo {
   id: string;
   title: string;
   published: string;
+  videoUrl?: string; // Direct MP4 link
 }
 
 export async function getLatestVideosFromPlaylist(): Promise<YouTubeVideo[]> {
-  const playlistId = "PL4A2F331EE86DCC22";
-  const rssUrl = `https://www.youtube.com/feeds/videos.xml?playlist_id=${playlistId}`;
+  const rssUrl = `https://www.tagesschau.de/multimedia/sendung/tagesschau_20_uhr/podcast-ts2000-video-100~podcast.xml`;
 
   try {
     const response = await fetch(rssUrl);
     const text = await response.text();
 
-    // Basic regex-based XML parsing to avoid large dependencies like fast-xml-parser
-    // Extract all entries from the RSS feed
-    const entries = text.split("<entry>").slice(1);
+    const entries = text.split("<item>").slice(1);
     
     return entries.map((entry) => {
-      const id = entry.match(/<yt:videoId>([^<]+)<\/yt:videoId>/)?.[1] || "";
+      const id = entry.match(/<guid>([^<]+)<\/guid>/)?.[1] || "";
       const title = entry.match(/<title>([^<]+)<\/title>/)?.[1] || "";
-      const published = entry.match(/<published>([^<]+)<\/published>/)?.[1] || "";
+      const published = entry.match(/<pubDate>([^<]+)<\/pubDate>/)?.[1] || "";
+      const videoUrl = entry.match(/<enclosure url="([^"]+)"/)?.[1] || "";
       
-      return { id, title, published };
-    }).filter(v => v.id);
+      return { id, title, published, videoUrl };
+    }).filter(v => v.videoUrl);
   } catch (error) {
-    console.error("Error fetching YouTube RSS:", error);
+    console.error("Error fetching Tagesschau RSS:", error);
     return [];
   }
 }

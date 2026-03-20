@@ -61,26 +61,42 @@ export async function GET(req: NextRequest) {
       }
 
       // 2. Download Video
-      console.log(`Downloading ${v.id} via yt-dlp...`);
-      const downloadResult = spawnSync(ytDlpPath, [
-        "-f", "best[height<=720][ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--extractor-args", "youtube:player_client=android,web",
-        "-o", tempFilePath,
-        videoUrl
-      ], { encoding: "utf-8" });
+      console.log(`Downloading ${v.id} (Direct MP4: ${!!v.videoUrl})...`);
+      
+      if (v.videoUrl) {
+        try {
+          const res = await fetch(v.videoUrl);
+          if (!res.ok) throw new Error(`Fetch failed: ${res.statusText}`);
+          const buffer = await res.arrayBuffer();
+          fs.writeFileSync(tempFilePath, Buffer.from(buffer));
+          console.log(`Direct download completed: ${tempFilePath}`);
+        } catch (err: any) {
+          console.warn("Direct download failed, falling back to yt-dlp:", err.message);
+        }
+      }
 
+      // Fallback or secondary attempt via yt-dlp
       if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
-        const errorDetail = downloadResult.stderr || downloadResult.error?.message || "Unknown error";
-        console.error(`Download failed for ${v.id}:`, errorDetail);
-        results.push({ 
-          id: v.id, 
-          status: "failed", 
-          error: "Download failed", 
-          detail: errorDetail,
-          exitCode: downloadResult.status 
-        });
-        continue;
+        const downloadResult = spawnSync(ytDlpPath, [
+          "-f", "best[height<=720][ext=mp4]/best",
+          "--merge-output-format", "mp4",
+          "--extractor-args", "youtube:player_client=android,web",
+          "-o", tempFilePath,
+          videoUrl
+        ], { encoding: "utf-8" });
+
+        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
+          const errorDetail = downloadResult.stderr || downloadResult.error?.message || "Unknown error";
+          console.error(`Download failed for ${v.id}:`, errorDetail);
+          results.push({ 
+            id: v.id, 
+            status: "failed", 
+            error: "Download failed", 
+            detail: errorDetail,
+            exitCode: downloadResult.status 
+          });
+          continue;
+        }
       }
 
       // 3. Upload to Gemini
