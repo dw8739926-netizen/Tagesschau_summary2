@@ -3,7 +3,7 @@ import { getLatestVideosFromPlaylist } from "@/lib/youtube";
 import { isVideoProcessed, saveSummary, supabase } from "@/lib/supabase";
 import { uploadVideo, model, deleteFile } from "@/lib/gemini";
 import { sendSummaryEmail } from "@/lib/resend";
-import { spawnSync, execSync } from "child_process";
+import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -15,154 +15,117 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Supabase client not initialized. Check environment variables." }, { status: 500 });
   }
 
-  // In production, add a CRON_SECRET check here for security
-  
   try {
     console.log("Starting Tagesschau Cron Job...");
     const videos = await getLatestVideosFromPlaylist();
     
-    // Process only the latest video for the cron run to avoid timeouts
-    const latestVideo = videos[0];
-    
-    if (!latestVideo) {
+    if (videos.length === 0) {
       return NextResponse.json({ message: "No videos found in playlist." });
     }
 
-    const processed = await isVideoProcessed(latestVideo.id);
-    if (processed) {
-      return NextResponse.json({ message: `Video ${latestVideo.id} already processed.` });
-    }
+    // Process the 3 latest videos
+    const candidates = videos.slice(0, 3);
+    const results = [];
+    let newProcessedCount = 0;
 
-    console.log(`Processing new video: ${latestVideo.title} (${latestVideo.id})`);
+    for (const v of candidates) {
+      // Vercel timeout protection: Limit to 2 per run (Gemini takes time)
+      if (newProcessedCount >= 2) break;
 
-    // 1. Download Video to local temp folder using yt-dlp
-    const videoUrl = `https://www.youtube.com/watch?v=${latestVideo.id}`;
-    const tempDir = path.join(os.tmpdir(), "tagesschau-temp"); // Use system temp for Vercel
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    const tempFilePath = path.join(tempDir, `${latestVideo.id}.mp4`);
-    
-    const isWindows = process.platform === "win32";
-    const ytDlpBinary = isWindows ? "yt-dlp.exe" : "yt-dlp";
-    const ytDlpSourcePath = path.join(process.cwd(), "bin", ytDlpBinary);
-    
-    // On Vercel (Linux), we must copy the binary to /tmp and chmod it
-    let ytDlpPath = ytDlpSourcePath;
-    if (!isWindows) {
-      const tempBinaryPath = path.join(os.tmpdir(), "yt-dlp");
-      try {
+      const alreadyProcessed = await isVideoProcessed(v.id);
+      if (alreadyProcessed) {
+        results.push({ id: v.id, status: "skipped", message: "Already processed" });
+        continue;
+      }
+
+      console.log(`Processing new video: ${v.title} (${v.id})`);
+
+      // 1. Setup paths
+      const videoUrl = `https://www.youtube.com/watch?v=${v.id}`;
+      const tempDir = path.join(os.tmpdir(), "tagesschau-temp");
+      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+      const tempFilePath = path.join(tempDir, `${v.id}.mp4`);
+      
+      const isWindows = process.platform === "win32";
+      const ytDlpBinary = isWindows ? "yt-dlp.exe" : "yt-dlp";
+      const ytDlpSourcePath = path.join(process.cwd(), "bin", ytDlpBinary);
+      let ytDlpPath = ytDlpSourcePath;
+
+      // Ensure Linux binary is executable on Vercel
+      if (!isWindows) {
+        const tempBinaryPath = path.join(os.tmpdir(), "yt-dlp");
         if (!fs.existsSync(tempBinaryPath)) {
           fs.copyFileSync(ytDlpSourcePath, tempBinaryPath);
           fs.chmodSync(tempBinaryPath, 0o755);
         }
         ytDlpPath = tempBinaryPath;
-      } catch (e) {
-        console.warn("Failed to copy/chmod yt-dlp to /tmp, using source path:", e);
       }
-    }
-    
-    console.log(`OS: ${process.platform}, final yt-dlp Path: ${ytDlpPath}`);
-    
-    if (!fs.existsSync(ytDlpPath)) {
-      throw new Error(`yt-dlp binary not found at ${ytDlpPath}`);
-    }
-    
-    console.log(`Working Directory: ${process.cwd()}`);
-    console.log(`yt-dlp Path: ${ytDlpPath}`);
-    
-    if (!fs.existsSync(ytDlpPath)) {
-      throw new Error(`yt-dlp.exe not found at ${ytDlpPath}`);
-    }
 
-    // Clean up any existing file from previous failed attempts
-    if (fs.existsSync(tempFilePath)) {
-      console.log(`Deleting existing temp file: ${tempFilePath}`);
-      fs.unlinkSync(tempFilePath);
-    }
+      // 2. Download Video
+      console.log(`Downloading ${v.id} via yt-dlp...`);
+      const downloadResult = spawnSync(ytDlpPath, [
+        "-f", "best[height<=720][ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "-o", tempFilePath,
+        videoUrl
+      ]);
 
-    console.log(`Downloading video via yt-dlp to ${tempFilePath}...`);
+      if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
+        results.push({ id: v.id, status: "failed", error: "Download failed" });
+        continue;
+      }
 
-    const resultDownload = spawnSync(ytDlpPath, [
-      "--force-overwrites",
-      "-f", "best[height<=720][ext=mp4]/best",
-      "-o", tempFilePath,
-      videoUrl
-    ], { encoding: "utf-8" });
+      // 3. Upload to Gemini
+      console.log(`Uploading ${v.id} to Gemini...`);
+      const geminiFile = await uploadVideo(tempFilePath, v.title);
+      
+      // 4. Generate Summary
+      console.log(`Analyzing ${v.id}...`);
+      const prompt = `Fasse die Hauptthemen dieser Tagesschau-Sendung präzise auf Deutsch zusammen. 
+      Erhöhe die Detailtiefe. Nenne die wichtigsten 3-4 Meldungen als Bullet-Points. 
+      Füge am Ende eine kurze visuelle Beschreibung der markantesten Szene hinzu.`;
 
-    if (resultDownload.stdout) console.log("yt-dlp stdout:", resultDownload.stdout);
-    if (resultDownload.stderr) console.log("yt-dlp stderr:", resultDownload.stderr);
+      const analysisResult = await model.generateContent([
+        { fileData: { mimeType: geminiFile.mimeType, fileUri: geminiFile.uri } },
+        { text: prompt },
+      ]);
 
-    if (resultDownload.error || resultDownload.status !== 0) {
-      const errorMsg = resultDownload.stderr || resultDownload.error?.message || "Unknown error";
-      console.error("yt-dlp error:", errorMsg);
-      throw new Error(`Failed to download video: ${errorMsg}`);
-    }
+      const summaryText = analysisResult.response.text();
 
-    const stats = fs.statSync(tempFilePath);
-    if (stats.size === 0) {
-      throw new Error("Downloaded file is empty (0 bytes).");
-    }
-    console.log(`Download complete (${(stats.size / 1024 / 1024).toFixed(2)} MB). Uploading to Google File API...`);
+      // 5. Save & Notify
+      const summaryData = {
+        video_id: v.id,
+        title: v.title,
+        date: v.published,
+        summary_text: summaryText,
+      };
+      
+      await saveSummary(summaryData);
 
-    // 2. Upload to Google File API
-    const googleFile = await uploadVideo(tempFilePath, latestVideo.title);
-
-    // 3. Delete temporary local file immediately
-    fs.unlinkSync(tempFilePath);
-
-    // 4. Gemini Analysis
-    console.log("Requesting Gemini analysis...");
-    const prompt = "Fasse die Themen dieser Nachrichtensendung detailliert zusammen. Füge außerdem zu jedem Thema eine visuelle Beschreibung der gezeigten Bilder oder Grafiken hinzu.";
-    
-    const result = await model.generateContent([
-      {
-        fileData: {
-          mimeType: googleFile.mimeType,
-          fileUri: googleFile.uri,
-        },
-      },
-      { text: prompt },
-    ]);
-
-    const summaryText = result.response.text();
-    console.log("Summary generated.");
-
-    // 5. Save to Supabase
-    const summaryData = {
-      video_id: latestVideo.id,
-      title: latestVideo.title,
-      date: latestVideo.published,
-      summary_text: summaryText,
-    };
-    
-    await saveSummary(summaryData);
-
-    // 6. Send Email
-    console.log("Sending email notification...");
-    const htmlEmail = `
-      <div style="font-family: sans-serif; max-width: 600px; margin: auto; color: #333;">
-        <h1 style="color: #003366; border-bottom: 2px solid #003366; padding-bottom: 10px;">Tagesschau Zusammenfassung</h1>
-        <h2>${latestVideo.title}</h2>
-        <p style="color: #666;">Datum: ${new Date(latestVideo.published).toLocaleString('de-DE')}</p>
-        <hr />
-        <div style="line-height: 1.6; white-space: pre-wrap;">
-          ${summaryText}
+      const htmlEmail = `
+        <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px;">
+          <h2 style="color: #003366;">Tagesschau Zusammenfassung</h2>
+          <hr/>
+          <h3>${v.title}</h3>
+          <div style="white-space: pre-wrap; line-height: 1.6;">${summaryText}</div>
+          <hr/>
+          <p style="font-size: 11px; color: #999;">Automatischer Service - Tagesschau Summary App</p>
         </div>
-        <hr />
-        <p style="font-size: 12px; color: #999;">Diese E-Mail wurde automatisch generiert.</p>
-      </div>
-    `;
-    
-    await sendSummaryEmail(latestVideo.title, htmlEmail);
+      `;
+      
+      await sendSummaryEmail(v.title, htmlEmail);
+      
+      // 6. Cleanup
+      await deleteFile(geminiFile.name);
+      if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      
+      results.push({ id: v.id, status: "success", title: v.title });
+      newProcessedCount++;
+    }
 
-    // 7. Cleanup Google File
-    await deleteFile(googleFile.name);
-
-    return NextResponse.json({ success: true, videoId: latestVideo.id });
-
+    return NextResponse.json({ results });
   } catch (error: any) {
-    console.error("Cron Job Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Cron Error:", error);
+    return NextResponse.json({ error: error.message || "Unknown error" }, { status: 500 });
   }
 }

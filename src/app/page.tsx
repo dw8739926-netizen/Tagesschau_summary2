@@ -9,26 +9,44 @@ export default async function Home() {
   return (
     <main className="container">
       <header className="header">
-        <h1>Tagesschau Summary</h1>
-        <p>Automatisierte Video-Zusammenfassungen mit Gemini 3.1 Flash-Lite</p>
+        <h1 className="title">Tagesschau Summary</h1>
+        <p className="subtitle">Die wichtigsten News präzise zusammengefasst.</p>
       </header>
 
-      <div className="grid">
+      <section className="dashboard">
         {summaries.length === 0 ? (
           <div className="empty-state">
-            <h3>Noch keine Zusammenfassungen vorhanden.</h3>
-            <p>Der Cron-Job wird regelmäßig nach neuen Videos suchen.</p>
+            <p>Noch keine Zusammenfassungen vorhanden.</p>
+            <p className="hint">Der Cron-Job wird regelmäßig nach neuen Videos suchen.</p>
           </div>
         ) : (
-          summaries.map((summary) => (
-            <article key={summary.video_id} className="card">
-              <div className="card-date">{new Date(summary.date).toLocaleDateString('de-DE', { day: '2-digit', month: 'long', year: 'numeric' })}</div>
-              <h2 className="card-title">{summary.title}</h2>
-              <div className="card-text">{summary.summary_text}</div>
-            </article>
-          ))
+          <div className="summaries-grid">
+            {summaries.map((summary) => (
+              <article key={summary.video_id} className="summary-card">
+                <div className="card-header">
+                  <span className="badge">News</span>
+                  <time className="date">
+                    {new Date(summary.date).toLocaleDateString('de-DE', { 
+                      day: '2-digit', 
+                      month: 'long', 
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </time>
+                </div>
+                <h2 className="summary-title">{summary.title}</h2>
+                <div className="summary-content">
+                  {summary.summary_text}
+                </div>
+                <footer className="card-footer">
+                  <a href={`https://youtube.com/watch?v=${summary.video_id}`} target="_blank" rel="noopener noreferrer" className="btn-secondary">Original Video</a>
+                </footer>
+              </article>
+            ))}
+          </div>
         )}
-      </div>
+      </section>
 
       <footer style={{ marginTop: '4rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
         &copy; {new Date().getFullYear()} Tagesschau Summary App

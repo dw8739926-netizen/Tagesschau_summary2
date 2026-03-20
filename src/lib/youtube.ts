@@ -13,6 +13,7 @@ export async function getLatestVideosFromPlaylist(): Promise<YouTubeVideo[]> {
     const text = await response.text();
 
     // Basic regex-based XML parsing to avoid large dependencies like fast-xml-parser
+    // Extract all entries from the RSS feed
     const entries = text.split("<entry>").slice(1);
     
     return entries.map((entry) => {
