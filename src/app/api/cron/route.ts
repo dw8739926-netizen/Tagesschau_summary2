@@ -29,8 +29,8 @@ export async function GET(req: NextRequest) {
     let newProcessedCount = 0;
 
     for (const v of candidates) {
-      // Vercel timeout protection: Limit to 2 per run (Gemini takes time)
-      if (newProcessedCount >= 2) break;
+      // Vercel timeout protection: Limit to 1 per run (Gemini takes time)
+      if (newProcessedCount >= 1) break;
 
       const alreadyProcessed = await isVideoProcessed(v.id);
       if (alreadyProcessed) {
