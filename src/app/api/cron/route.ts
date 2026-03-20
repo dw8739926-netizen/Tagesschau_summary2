@@ -68,10 +68,18 @@ export async function GET(req: NextRequest) {
         "--merge-output-format", "mp4",
         "-o", tempFilePath,
         videoUrl
-      ]);
+      ], { encoding: "utf-8" });
 
       if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
-        results.push({ id: v.id, status: "failed", error: "Download failed" });
+        const errorDetail = downloadResult.stderr || downloadResult.error?.message || "Unknown error";
+        console.error(`Download failed for ${v.id}:`, errorDetail);
+        results.push({ 
+          id: v.id, 
+          status: "failed", 
+          error: "Download failed", 
+          detail: errorDetail,
+          exitCode: downloadResult.status 
+        });
         continue;
       }
 
